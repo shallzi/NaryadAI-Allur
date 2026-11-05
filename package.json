@@ -1,0 +1,23 @@
+{
+  "name": "allur-twin",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail -n gateway,web,sim -c blue,magenta,green \"pnpm --filter @allur/gateway dev\" \"pnpm --filter @allur/web dev\" \"pnpm --filter @allur/simulators dev\"",
+    "sim": "pnpm --filter @allur/simulators start",
+    "build": "pnpm -r run build",
+    "start": "pnpm --filter @allur/gateway start",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "openapi": "pnpm --filter @allur/contracts openapi"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.2.0",
+    "typescript": "^7.0.2"
+  }
+}

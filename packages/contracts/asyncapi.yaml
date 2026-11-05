@@ -1,0 +1,450 @@
+asyncapi: 3.0.0
+info:
+  title: Цифровой двойник цеха — MQTT
+  version: 1.0.0
+  description: |
+    Контроллеры оборудования (через шлюз OPC UA → MQTT) и видеоаналитика камер публикуют
+    сообщения во встроенный брокер двойника. Двойник приводит их к каноническим событиям
+    (те же, что приходят из 1С по REST) и в ответ выдаёт наряды в топик allur/kst/twin/work-orders.
+
+    - Сообщения — JSON в UTF-8. Поле ts (ISO 8601 с часовым поясом) желательно: без него
+      двойник ставит время приёма.
+    - Некорректные сообщения не теряются молча: они видны на экране «Источники данных»
+      с причиной отказа.
+    - Топики allur/kst/twin/# и allur/kst/demo/# публикует только сам шлюз.
+    - clientId рекомендуется начинать с типа источника: plc-…, camera-… — так двойник
+      показывает, кто подключён.
+    - Коды участков и оборудования в топиках — из конфигурации завода
+      (GET /api/v1/plant/config). Сообщение от оборудования, которого нет в текущей
+      версии конфигурации, отклоняется с причиной.
+defaultContentType: application/json
+
+servers:
+  local:
+    host: localhost:1883
+    protocol: mqtt
+    description: Локальный запуск (TCP)
+  local-ws:
+    host: localhost:3000
+    pathname: /mqtt
+    protocol: ws
+    description: Локальный запуск, MQTT поверх WebSocket
+  cloud:
+    host: '{host}'
+    pathname: /mqtt
+    protocol: wss
+    description: Облачное демо — MQTT поверх WebSocket через порт HTTPS
+    variables:
+      host:
+        default: allur-twin.onrender.com
+
+channels:
+  bodyCheckpoint:
+    address: allur/kst/{area}/{checkpointId}/checkpoint
+    title: Отметка кузова
+    description: Кузов прошёл точку отметки — RFID тележки у станции или трекинг ПЛК конвейера (ступень 1). Точки — в конфигурации завода (GET /api/v1/plant/config). Нужен bodyId или VIN.
+    parameters:
+      area:
+        $ref: '#/components/parameters/area'
+      checkpointId:
+        description: Код точки отметки из конфигурации завода (RFID-BOOTH-02, PLC-CONV-03…)
+    messages:
+      bodyCheckpoint:
+        $ref: '#/components/messages/BodyCheckpoint'
+  operationResult:
+    address: allur/kst/{area}/{equipmentId}/operation
+    title: Результат операции над кузовом
+    description: Робот, инструмент поста или контрольный пост сообщает, выполнена ли операция по кузову (ступень 1).
+    parameters:
+      area:
+        $ref: '#/components/parameters/area'
+      equipmentId:
+        $ref: '#/components/parameters/equipmentId'
+    messages:
+      operationResult:
+        $ref: '#/components/messages/OperationResult'
+  equipmentState:
+    address: allur/kst/{area}/{equipmentId}/state
+    title: Состояние оборудования
+    description: Контроллер сообщает смену состояния (и периодически подтверждает текущее).
+    parameters:
+      area:
+        $ref: '#/components/parameters/area'
+      equipmentId:
+        $ref: '#/components/parameters/equipmentId'
+    messages:
+      equipmentState:
+        $ref: '#/components/messages/EquipmentState'
+  equipmentCounter:
+    address: allur/kst/{area}/{equipmentId}/counter
+    title: Счётчик циклов
+    description: Наработка оборудования в циклах (кузовах) — основа прогноза ресурса до ТО.
+    parameters:
+      area:
+        $ref: '#/components/parameters/area'
+      equipmentId:
+        $ref: '#/components/parameters/equipmentId'
+    messages:
+      equipmentCounter:
+        $ref: '#/components/messages/EquipmentCounter'
+  equipmentTelemetry:
+    address: allur/kst/{area}/{equipmentId}/telemetry
+    title: Телеметрия
+    description: Значения датчиков — перепад давления на фильтрах окрасочных камер (ступень 1), ток и вибрация привода конвейера (ступень 2).
+    parameters:
+      area:
+        $ref: '#/components/parameters/area'
+      equipmentId:
+        $ref: '#/components/parameters/equipmentId'
+    messages:
+      equipmentTelemetry:
+        $ref: '#/components/messages/EquipmentTelemetry'
+  cameraDetection:
+    address: allur/kst/{area}/camera/{cameraId}/detection
+    title: Детекции видеоаналитики
+    description: Видеоаналитика (RTSP-поток камеры → модель) сообщает о событиях на посту.
+    parameters:
+      area:
+        $ref: '#/components/parameters/area'
+      cameraId:
+        $ref: '#/components/parameters/cameraId'
+    messages:
+      cameraDetection:
+        $ref: '#/components/messages/CameraDetection'
+  equipmentHeartbeat:
+    address: allur/kst/{area}/{equipmentId}/heartbeat
+    title: Пульс связи
+    description: Шлюз контроллеров подтверждает, что оборудование на связи (раз в 10–30 с). Событием цеха не становится — по нему двойник показывает статус подключения «На связи». Нет данных дольше 60 с — «Нет данных».
+    parameters:
+      area:
+        $ref: '#/components/parameters/area'
+      equipmentId:
+        $ref: '#/components/parameters/equipmentId'
+    messages:
+      equipmentHeartbeat:
+        $ref: '#/components/messages/EquipmentHeartbeat'
+  workOrders:
+    address: allur/kst/twin/work-orders
+    title: Наряды от двойника
+    description: Руководитель принял решение по инциденту — двойник выдаёт наряд. В реальном внедрении наряд уходит в 1С:ТОиР или MES.
+    messages:
+      workOrder:
+        $ref: '#/components/messages/WorkOrder'
+  plantConfig:
+    address: allur/kst/twin/plant-config
+    title: Конфигурация завода изменилась
+    description: Двойник применил новую версию состава цеха (plant_config_changed). Сообщение сохраняется в брокере (retained) — подписчик сразу получает текущую версию. Полный состав — GET /api/v1/plant/config.
+    messages:
+      plantConfig:
+        $ref: '#/components/messages/PlantConfigChanged'
+  demoClock:
+    address: allur/kst/demo/clock
+    title: Часы демонстрации (служебный)
+    description: Только для имитаторов в прототипе — время симуляции, скорость, ступень и сценарий. Не часть контракта интеграции.
+    messages:
+      demoClock:
+        $ref: '#/components/messages/DemoClock'
+
+operations:
+  sendBodyCheckpoint:
+    action: send
+    channel:
+      $ref: '#/channels/bodyCheckpoint'
+    summary: Считыватель RFID или ПЛК конвейера публикует отметку кузова
+  sendOperationResult:
+    action: send
+    channel:
+      $ref: '#/channels/operationResult'
+    summary: Робот или инструмент поста публикует результат операции
+  sendEquipmentState:
+    action: send
+    channel:
+      $ref: '#/channels/equipmentState'
+    summary: Контроллер публикует состояние
+  sendEquipmentCounter:
+    action: send
+    channel:
+      $ref: '#/channels/equipmentCounter'
+    summary: Контроллер публикует счётчик циклов
+  sendEquipmentTelemetry:
+    action: send
+    channel:
+      $ref: '#/channels/equipmentTelemetry'
+    summary: Контроллер или датчик публикует значение
+  sendCameraDetection:
+    action: send
+    channel:
+      $ref: '#/channels/cameraDetection'
+    summary: Видеоаналитика публикует детекцию
+  sendEquipmentHeartbeat:
+    action: send
+    channel:
+      $ref: '#/channels/equipmentHeartbeat'
+    summary: Шлюз контроллеров подтверждает связь с оборудованием
+  receiveWorkOrders:
+    action: receive
+    channel:
+      $ref: '#/channels/workOrders'
+    summary: Системы завода получают наряды двойника
+  receivePlantConfig:
+    action: receive
+    channel:
+      $ref: '#/channels/plantConfig'
+    summary: Шлюзы и имитаторы узнают о новой версии состава цеха
+
+components:
+  parameters:
+    area:
+      description: Код участка из конфигурации завода (латиница, строчные). В исходном составе — warehouse (склад комплектующих), weld (сварка), paint (окраска), assembly (сборка), qc (ОТК), finished (склад готовой продукции)
+      examples: [weld, paint, assembly]
+    equipmentId:
+      description: Код оборудования из конфигурации завода. В исходном составе — ABB-01…ABB-04, PRETREAT, BOOTH-01, BOOTH-02, OVEN, CONV-03, QC-LINE, QC-TRACK, QC-RAIN
+      examples: [ABB-04, BOOTH-02, CONV-03]
+    cameraId:
+      description: Код камеры — CAM-WELD, CAM-PAINT, CAM-ASM, CAM-QC
+      examples: [CAM-ASM]
+
+  messages:
+    BodyCheckpoint:
+      name: BodyCheckpoint
+      title: Отметка кузова
+      payload:
+        type: object
+        required: [direction]
+        properties:
+          bodyId: { type: string, description: 'Внутренний номер кузова (до нанесения VIN)' }
+          vin: { type: string, description: 'VIN, 17 символов' }
+          direction: { type: string, enum: [in, out], description: 'in — кузов пришёл, out — ушёл' }
+          postId: { type: string, description: 'Позиция на конвейере (пост 1С:MES) — для трекинга ПЛК' }
+          ts: { type: string, format: date-time }
+      examples:
+        - name: Кузов в Камере-02 (RFID)
+          payload: { bodyId: B-04815, vin: KZACN1S13TK004815, direction: in, ts: '2026-10-07T13:58:00+05:00' }
+    OperationResult:
+      name: OperationResult
+      title: Результат операции
+      payload:
+        type: object
+        required: [operation, result]
+        properties:
+          bodyId: { type: string }
+          vin: { type: string }
+          operation: { type: string, description: 'Код операции из каталога: weld_sides, basecoat, wheels…' }
+          result: { type: string, enum: [ok, nok] }
+          details: { type: string }
+          ts: { type: string, format: date-time }
+      examples:
+        - name: Боковины сварены
+          payload: { bodyId: B-04820, operation: weld_sides, result: ok, ts: '2026-10-07T12:31:00+05:00' }
+    EquipmentState:
+      name: EquipmentState
+      title: Состояние оборудования
+      payload:
+        type: object
+        required: [status]
+        properties:
+          status:
+            type: string
+            enum: [run, idle, fault, maintenance]
+            description: run — работает, idle — ожидает, fault — авария, maintenance — обслуживание
+          code:
+            type: string
+            maxLength: 32
+            description: Код аварии контроллера
+          text:
+            type: string
+            maxLength: 200
+            description: Текст аварии
+          ts:
+            type: string
+            format: date-time
+            description: Время на контроллере
+      examples:
+        - name: Обрыв цепи конвейера
+          payload:
+            status: fault
+            code: E-2117
+            text: Обрыв приводной цепи
+            ts: '2026-10-07T10:05:00+05:00'
+
+    EquipmentCounter:
+      name: EquipmentCounter
+      title: Счётчик циклов
+      payload:
+        type: object
+        required: [cycles, total]
+        properties:
+          cycles:
+            type: integer
+            minimum: 0
+            description: Циклов с последнего ТО
+          total:
+            type: integer
+            minimum: 0
+            description: Циклов за весь срок службы
+          ts:
+            type: string
+            format: date-time
+      examples:
+        - name: Робот ABB-04
+          payload:
+            cycles: 5641
+            total: 48213
+            ts: '2026-10-07T13:36:00+05:00'
+
+    EquipmentTelemetry:
+      name: EquipmentTelemetry
+      title: Значение датчика
+      payload:
+        type: object
+        required: [metric, value]
+        properties:
+          metric:
+            type: string
+            enum: [filter_dp_pa, motor_current_a, vibration_mm_s, temperature_c, pressure_bar, torque_nm]
+            description: filter_dp_pa — перепад давления на фильтре (Па), motor_current_a — ток привода (А), vibration_mm_s — вибрация (мм/с), temperature_c — температура (°C), pressure_bar — давление (бар), torque_nm — момент затяжки (Н·м)
+          value:
+            type: number
+          ts:
+            type: string
+            format: date-time
+      examples:
+        - name: Перепад на фильтре Камеры-02
+          payload:
+            metric: filter_dp_pa
+            value: 312
+            ts: '2026-10-07T13:36:00+05:00'
+
+    CameraDetection:
+      name: CameraDetection
+      title: Детекция видеоаналитики
+      payload:
+        type: object
+        required: [kind]
+        properties:
+          kind:
+            type: string
+            enum: [line_stopped, queue, post_empty]
+            description: line_stopped — линия стоит, queue — очередь (value — число кузовов), post_empty — пост без оператора
+          value:
+            type: number
+          clipUrl:
+            type: string
+            description: Ссылка на фрагмент записи
+          ts:
+            type: string
+            format: date-time
+      examples:
+        - name: Линия сборки стоит
+          payload:
+            kind: line_stopped
+            clipUrl: /media/clips/assembly-stop.mp4
+            ts: '2026-10-07T10:06:00+05:00'
+
+    EquipmentHeartbeat:
+      name: EquipmentHeartbeat
+      title: Пульс связи
+      payload:
+        type: object
+        properties:
+          status:
+            type: string
+            enum: [run, idle, fault, maintenance]
+            description: Текущее состояние (справочно, событием не становится)
+          ts:
+            type: string
+            format: date-time
+            description: Время на шлюзе контроллеров
+      examples:
+        - name: Камера окраски на связи
+          payload:
+            status: run
+            ts: '2026-10-07T13:36:00+05:00'
+
+    WorkOrder:
+      name: WorkOrder
+      title: Наряд от двойника
+      payload:
+        type: object
+        required: [workOrderId, incidentId, action, area, title, scheduledAt, issuedAt]
+        properties:
+          workOrderId:
+            type: string
+          incidentId:
+            type: string
+          action:
+            type: string
+            enum: [replace_filter, maintenance, repair, resequence, expedite_parts, inspect, none]
+          area:
+            type: string
+          equipmentId:
+            type: string
+          title:
+            type: string
+          scheduledAt:
+            type: string
+            format: date-time
+            description: Когда выполнить
+          durationMin:
+            type: number
+          issuedAt:
+            type: string
+            format: date-time
+          issuedBy:
+            type: string
+      examples:
+        - name: Замена фильтра в пересменку
+          payload:
+            workOrderId: wo-0001
+            incidentId: inc-quality-paint-0001
+            action: replace_filter
+            area: paint
+            equipmentId: BOOTH-02
+            title: Заменить фильтр Камеры-02 в пересменку
+            scheduledAt: '2026-10-07T16:00:00+05:00'
+            durationMin: 25
+            issuedAt: '2026-10-07T13:45:00+05:00'
+            issuedBy: Начальник производства
+
+    PlantConfigChanged:
+      name: PlantConfigChanged
+      title: Новая версия конфигурации завода
+      payload:
+        type: object
+        required: [version, updatedAt]
+        properties:
+          version:
+            type: integer
+            minimum: 1
+            description: Номер версии (растёт с каждым применением и откатом)
+          updatedAt:
+            type: string
+            format: date-time
+      examples:
+        - name: Добавили камеру окраски
+          payload:
+            version: 2
+            updatedAt: '2026-10-07T14:05:00+05:00'
+
+    DemoClock:
+      name: DemoClock
+      title: Часы демонстрации
+      payload:
+        type: object
+        properties:
+          runId:
+            type: integer
+          seed:
+            type: integer
+          simTime:
+            type: number
+            description: Время симуляции, мс от 1970-01-01 UTC
+          speed:
+            type: number
+          paused:
+            type: boolean
+          stage:
+            type: integer
+            enum: [0, 1, 2]
+          scenario:
+            type: string
